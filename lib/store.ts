@@ -1,85 +1,120 @@
-// ── Local store — mirrors Firebase Firestore structure using localStorage ──────
-import { ManifestResult, InventoryItem, CampConfig } from "./models";
+// ── Store — Firestore-backed, mirrors Android CloudSync structure ─────────────
+// Firestore path: users/{uid}/quotes/{refNum}  → { json: "...", updatedAt: number }
+//                 users/{uid}/inventory/{id}   → { json: "...", updatedAt: number }
+//                 users/{uid}/settings/app     → settings object
 
-const KEYS = {
-  QUOTES:    "kfc_quotes",
-  INVENTORY: "kfc_inventory",
-  SETTINGS:  "kfc_settings",
-};
+import {
+  collection, doc, getDoc, getDocs, setDoc, deleteDoc,
+  onSnapshot, query, orderBy, Unsubscribe
+} from "firebase/firestore";
+import { db, auth } from "./firebase";
+import { ManifestResult, InventoryItem, CampConfig, ToBuyItem } from "./models";
 
-// ── Quotes ───────────────────────────────────────────────────────────────────
+// ── Firestore path helpers (same as FirebaseManager.kt) ──────────────────────
 
-export function getAllQuotes(): ManifestResult[] {
-  if (typeof window === "undefined") return [];
+function uid(): string {
+  return auth.currentUser?.uid ?? "anon";
+}
+function quotesCol()          { return collection(db, "users", uid(), "quotes"); }
+function quoteDoc(ref: string){ return doc(db, "users", uid(), "quotes", ref); }
+function inventoryCol()       { return collection(db, "users", uid(), "inventory"); }
+function inventoryDoc(id: string){ return doc(db, "users", uid(), "inventory", id); }
+function settingsDocRef()     { return doc(db, "users", uid(), "settings", "app"); }
+
+// ── Quotes ────────────────────────────────────────────────────────────────────
+
+export async function getAllQuotes(): Promise<ManifestResult[]> {
   try {
-    const raw = localStorage.getItem(KEYS.QUOTES);
-    return raw ? JSON.parse(raw) : [];
+    const snap = await getDocs(quotesCol());
+    return snap.docs
+      .map(d => { try { return JSON.parse(d.data().json) as ManifestResult; } catch { return null; } })
+      .filter(Boolean)
+      .sort((a, b) => (b!.createdAt ?? 0) - (a!.createdAt ?? 0)) as ManifestResult[];
   } catch { return []; }
 }
 
-export function saveQuote(result: ManifestResult): void {
-  const all = getAllQuotes();
-  const idx = all.findIndex(q => q.refNumber === result.refNumber);
-  if (idx >= 0) all[idx] = result;
-  else all.unshift(result);
-  localStorage.setItem(KEYS.QUOTES, JSON.stringify(all));
+export async function saveQuote(result: ManifestResult): Promise<void> {
+  try {
+    await setDoc(quoteDoc(result.refNumber), {
+      json: JSON.stringify(result),
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (e) { console.warn("saveQuote failed:", e); }
 }
 
-export function getQuote(ref: string): ManifestResult | undefined {
-  return getAllQuotes().find(q => q.refNumber === ref);
+export async function getQuote(ref: string): Promise<ManifestResult | undefined> {
+  try {
+    const d = await getDoc(quoteDoc(ref));
+    if (!d.exists()) return undefined;
+    return JSON.parse(d.data().json) as ManifestResult;
+  } catch { return undefined; }
 }
 
-export function deleteQuote(ref: string): void {
-  const all = getAllQuotes().filter(q => q.refNumber !== ref);
-  localStorage.setItem(KEYS.QUOTES, JSON.stringify(all));
+export async function deleteQuote(ref: string): Promise<void> {
+  try { await deleteDoc(quoteDoc(ref)); }
+  catch (e) { console.warn("deleteQuote failed:", e); }
 }
 
-export function saveDraft(config: CampConfig, ref: string): void {
-  const existing = getQuote(ref);
+export async function saveDraft(config: CampConfig, ref: string): Promise<void> {
+  const existing = await getQuote(ref);
   const draft: ManifestResult = existing
     ? { ...existing, config, isDraft: true }
-    : {
-        config,
-        categories: [],
-        totalGuests: 0,
-        totalTents: 0,
-        totalBeds: 0,
-        refNumber: ref,
-        createdAt: Date.now(),
-        status: "DRAFT",
-        isDraft: true,
-      };
-  saveQuote(draft);
+    : { config, categories: [], totalGuests: 0, totalTents: 0, totalBeds: 0,
+        refNumber: ref, createdAt: Date.now(), status: "DRAFT", isDraft: true };
+  await saveQuote(draft);
 }
 
-// ── Inventory ────────────────────────────────────────────────────────────────
+/** Real-time listener — calls back whenever the user's quotes change */
+export function subscribeQuotes(cb: (quotes: ManifestResult[]) => void): Unsubscribe {
+  return onSnapshot(quotesCol(), snap => {
+    const quotes = snap.docs
+      .map(d => { try { return JSON.parse(d.data().json) as ManifestResult; } catch { return null; } })
+      .filter(Boolean)
+      .sort((a, b) => (b!.createdAt ?? 0) - (a!.createdAt ?? 0)) as ManifestResult[];
+    cb(quotes);
+  }, err => { console.warn("subscribeQuotes error:", err); cb([]); });
+}
 
-export function getAllInventory(): InventoryItem[] {
-  if (typeof window === "undefined") return [];
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
+export async function getAllInventory(): Promise<InventoryItem[]> {
   try {
-    const raw = localStorage.getItem(KEYS.INVENTORY);
-    return raw ? JSON.parse(raw) : [];
+    const snap = await getDocs(inventoryCol());
+    return snap.docs
+      .map(d => { try { return JSON.parse(d.data().json) as InventoryItem; } catch { return null; } })
+      .filter(Boolean) as InventoryItem[];
   } catch { return []; }
 }
 
-export function saveInventoryItem(item: InventoryItem): void {
-  const all = getAllInventory();
-  const idx = all.findIndex(i => i.id === item.id);
-  if (idx >= 0) all[idx] = { ...item, lastUpdated: Date.now() };
-  else all.push({ ...item, lastUpdated: Date.now() });
-  localStorage.setItem(KEYS.INVENTORY, JSON.stringify(all));
+export async function saveInventoryItem(item: InventoryItem): Promise<void> {
+  const updated = { ...item, lastUpdated: Date.now() };
+  try {
+    await setDoc(inventoryDoc(item.id), {
+      json: JSON.stringify(updated),
+      updatedAt: Date.now(),
+    }, { merge: true });
+  } catch (e) { console.warn("saveInventoryItem failed:", e); }
 }
 
-export function deleteInventoryItem(id: string): void {
-  const all = getAllInventory().filter(i => i.id !== id);
-  localStorage.setItem(KEYS.INVENTORY, JSON.stringify(all));
+export async function deleteInventoryItem(id: string): Promise<void> {
+  try { await deleteDoc(inventoryDoc(id)); }
+  catch (e) { console.warn("deleteInventoryItem failed:", e); }
 }
 
 export function newInventoryId(): string {
   return `inv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-// ── Settings ─────────────────────────────────────────────────────────────────
+export function subscribeInventory(cb: (items: InventoryItem[]) => void): Unsubscribe {
+  return onSnapshot(inventoryCol(), snap => {
+    const items = snap.docs
+      .map(d => { try { return JSON.parse(d.data().json) as InventoryItem; } catch { return null; } })
+      .filter(Boolean) as InventoryItem[];
+    cb(items);
+  }, err => { console.warn("subscribeInventory error:", err); cb([]); });
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
 
 export interface AppSettings {
   companyName: string;
@@ -97,7 +132,7 @@ export interface AppSettings {
   fontChoice: string;
 }
 
-const defaultSettings: AppSettings = {
+const DEFAULT_SETTINGS: AppSettings = {
   companyName: "KuFull CHARGE",
   companySubtitle: "Safari Equipment Specialists",
   currency: "KES",
@@ -113,43 +148,55 @@ const defaultSettings: AppSettings = {
   fontChoice: "playfair",
 };
 
+const SETTINGS_LS_KEY = "kufull_settings_local";
+
 export function getSettings(): AppSettings {
-  if (typeof window === "undefined") return defaultSettings;
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
   try {
-    const raw = localStorage.getItem(KEYS.SETTINGS);
-    return raw ? { ...defaultSettings, ...JSON.parse(raw) } : defaultSettings;
-  } catch { return defaultSettings; }
+    const raw = localStorage.getItem(SETTINGS_LS_KEY);
+    return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS;
+  } catch { return DEFAULT_SETTINGS; }
 }
 
 export function saveSettings(s: Partial<AppSettings>): void {
-  const current = getSettings();
-  localStorage.setItem(KEYS.SETTINGS, JSON.stringify({ ...current, ...s }));
+  const updated = { ...getSettings(), ...s };
+  if (typeof window !== "undefined") {
+    localStorage.setItem(SETTINGS_LS_KEY, JSON.stringify(updated));
+  }
+  // Also push to Firestore if logged in
+  if (auth.currentUser) {
+    setDoc(settingsDocRef(), updated, { merge: true }).catch(console.warn);
+  }
 }
 
-// ── ToBuy calculator ─────────────────────────────────────────────────────────
-import { ToBuyItem, InventoryItem as InvItem } from "./models";
-import { inventoryStatus } from "./models";
+// ── Ref number ────────────────────────────────────────────────────────────────
 
-export function calculateToBuy(result: ManifestResult, inventory: InvItem[]): ToBuyItem[] {
+export function nextRefNumber(existingRefs: string[]): string {
+  const nums = existingRefs
+    .map(r => parseInt(r.replace(/\D/g, ""), 10))
+    .filter(n => !isNaN(n));
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `KFC-${String(next).padStart(4, "0")}`;
+}
+
+// ── To-Buy calculator ─────────────────────────────────────────────────────────
+
+export function calculateToBuy(result: ManifestResult, inventory: InventoryItem[]): ToBuyItem[] {
   const items: ToBuyItem[] = [];
   for (const cat of result.categories) {
     for (const eq of cat.items) {
-      if (eq.name.startsWith("TOTAL") || eq.quantity <= 0) continue;
+      if (eq.quantity <= 0) continue;
       const inv = inventory.find(i =>
         i.name.toLowerCase() === eq.name.toLowerCase() ||
-        i.name.toLowerCase().includes(eq.name.toLowerCase().slice(0, 10)) ||
-        eq.name.toLowerCase().includes(i.name.toLowerCase().slice(0, 10))
+        i.name.toLowerCase().includes(eq.name.toLowerCase().slice(0, 12)) ||
+        eq.name.toLowerCase().includes(i.name.toLowerCase().slice(0, 12))
       );
-      const inStock = inv?.quantityAvailable ?? 0;
+      const inStock  = inv?.quantityAvailable ?? 0;
       const shortfall = Math.max(0, eq.quantity - inStock);
       if (shortfall > 0) {
         items.push({
-          name: eq.name,
-          category: cat.name,
-          categoryColor: cat.colorHex,
-          needed: eq.quantity,
-          inStock,
-          shortfall,
+          name: eq.name, category: cat.name, categoryColor: cat.colorHex,
+          needed: eq.quantity, inStock, shortfall,
           unitCost: inv?.unitCost ?? 0,
           estimatedTotal: shortfall * (inv?.unitCost ?? 0),
           supplier: inv?.supplier ?? "",

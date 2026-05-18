@@ -3,8 +3,8 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ChevronRight, Save, Loader2, Tent, Users, Bed, Calendar } from "lucide-react";
 import { CampConfig, defaultCampConfig, CAMP_TYPES, LOCATIONS } from "@/lib/models";
-import { calculate, nextRefNumber } from "@/lib/camp-calculator";
-import { saveQuote, saveDraft, getAllQuotes } from "@/lib/store";
+import { calculate } from "@/lib/camp-calculator";
+import { saveQuote, saveDraft, nextRefNumber } from "@/lib/store";
 import StepClient     from "@/components/quote/StepClient";
 import StepTents      from "@/components/quote/StepTents";
 import StepServices   from "@/components/quote/StepServices";
@@ -29,7 +29,7 @@ export default function NewQuotePage() {
   const [config,      setConfig]      = useState<CampConfig>(defaultCampConfig());
   const [generating,  setGenerating]  = useState(false);
   const [result,      setResult]      = useState<ReturnType<typeof calculate> | null>(null);
-  const [refNumber]                   = useState(() => nextRefNumber(getAllQuotes().map(q => q.refNumber)));
+  const [refNumber]                   = useState(() => nextRefNumber([]));
 
   const update = useCallback((patch: Partial<CampConfig>) => {
     setConfig(prev => ({ ...prev, ...patch }));
@@ -63,20 +63,20 @@ export default function NewQuotePage() {
     setGenerating(true);
     await new Promise(r => setTimeout(r, 400));
     const r = calculate(config, refNumber);
-    saveQuote(r);
+    await saveQuote(r);
     setResult(r);
     setGenerating(false);
     setStep(4);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function handleDraft() {
-    saveDraft(config, refNumber);
+  async function handleDraft() {
+    await saveDraft(config, refNumber);
     router.push("/dashboard");
   }
 
-  function handleFinish() {
-    if (result) saveQuote({ ...result, status: "CONFIRMED" });
+  async function handleFinish() {
+    if (result) await saveQuote({ ...result, status: "CONFIRMED" });
     router.push("/dashboard");
   }
 
