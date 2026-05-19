@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { ChevronLeft, Loader2, TrendingUp } from "lucide-react";
 import { ManifestResult, EquipmentCategory } from "@/lib/models";
-import { getQuote, getAllInventory, calculateToBuy } from "@/lib/store";
+import { getQuote } from "@/lib/store";
 import { fmt } from "@/lib/utils";
 
 // Category base costs (KES per unit) — rough market estimates
@@ -36,9 +36,10 @@ export default function PricingPage() {
   const [miscPct,    setMiscPct]    = useState(8);
 
   useEffect(() => {
-    const q = getQuote(decodeURIComponent(id));
-    if (q) setResult(q);
-    else router.replace("/history");
+    getQuote(decodeURIComponent(id)).then(q => {
+      if (q) setResult(q);
+      else router.replace("/history");
+    });
   }, [id]);
 
   const baseCosts = useMemo(() => {
