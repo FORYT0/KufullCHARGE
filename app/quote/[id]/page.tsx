@@ -30,9 +30,10 @@ export default function QuoteViewPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const q = getQuote(decodeURIComponent(id));
-    if (q) setResult(q);
-    else router.replace("/history");
+    getQuote(decodeURIComponent(id)).then(q => {
+      if (q) setResult(q);
+      else router.replace("/history");
+    });
   }, [id]);
 
   function updateResult(r: ManifestResult) {

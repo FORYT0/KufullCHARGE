@@ -20,14 +20,16 @@ export default function DashboardPage() {
   const [userEmail, setUserEmail] = useState("");
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, user => {
+    // Auth guard: redirect to /auth if not logged in
+    const authUnsub = onAuthStateChanged(auth, user => {
       if (!user) { router.replace("/auth"); return; }
       setUserEmail(user.email ?? "");
     });
-    return unsub;
+    return authUnsub;
   }, []);
 
   useEffect(() => {
+    // subscribeQuotes is auth-aware: waits for Firebase Auth before reading Firestore
     const unsub = subscribeQuotes(qs => { setQuotes(qs); setLoading(false); });
     return unsub;
   }, []);

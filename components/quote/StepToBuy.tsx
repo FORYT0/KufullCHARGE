@@ -1,15 +1,19 @@
 "use client";
-import { useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { ShoppingCart, Package, AlertCircle } from "lucide-react";
-import { ManifestResult } from "@/lib/models";
-import { calculateToBuy, getAllInventory } from "@/lib/store";
+import { ManifestResult, InventoryItem } from "@/lib/models";
+import { calculateToBuy, subscribeInventory } from "@/lib/store";
 import { fmt } from "@/lib/utils";
 
 interface Props { result: ManifestResult; }
 
 export default function StepToBuy({ result }: Props) {
-  const inventory = useMemo(() => getAllInventory(), []);
-  const toBuy     = useMemo(() => calculateToBuy(result, inventory), [result, inventory]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  useEffect(() => {
+    const unsub = subscribeInventory(items => setInventory(items));
+    return unsub;
+  }, []);
+  const toBuy = useMemo(() => calculateToBuy(result, inventory), [result, inventory]);
 
   const grandTotal = toBuy.reduce((s, t) => s + t.estimatedTotal, 0);
   const withCost   = toBuy.filter(t => t.unitCost > 0);
